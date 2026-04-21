@@ -19,7 +19,7 @@ def test_manifest_json_endpoint(tmp_path: Path) -> None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/manifest.json", timeout=2) as resp:  # noqa: S310
             body = resp.read().decode("utf-8")
-        assert '"preflight_version": 3' in body
+        assert '"preflight_version": 4' in body
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/manifest.md", timeout=2) as resp:  # noqa: S310
             markdown = resp.read().decode("utf-8")

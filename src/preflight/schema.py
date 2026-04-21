@@ -6,12 +6,14 @@ from typing import Any
 def manifest_schema() -> dict[str, Any]:
     command_schema = {
         "type": "object",
-        "required": ["command", "confidence", "source", "evidence", "risk"],
+        "required": ["command", "confidence", "source", "evidence", "risk", "context", "contexts"],
         "properties": {
             "command": {"type": "string"},
             "confidence": {"type": "string"},
             "source": {"type": "string"},
             "risk": {"type": "string"},
+            "context": {"type": "string"},
+            "contexts": {"type": "array", "items": {"type": "string"}},
             "evidence": {
                 "type": "array",
                 "items": {
@@ -22,10 +24,34 @@ def manifest_schema() -> dict[str, Any]:
                         "source": {"type": "string"},
                         "kind": {"type": "string"},
                         "detail": {"type": "string"},
+                        "context": {"type": "string"},
                     },
                     "additionalProperties": True,
                 },
             },
+        },
+        "additionalProperties": True,
+    }
+    warning_schema = {
+        "type": "object",
+        "required": [
+            "id",
+            "severity",
+            "category",
+            "message",
+            "evidence",
+            "affected_paths",
+            "confidence",
+        ],
+        "properties": {
+            "id": {"type": "string"},
+            "severity": {"type": "string"},
+            "category": {"type": "string"},
+            "message": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "object"}},
+            "affected_paths": {"type": "array", "items": {"type": "string"}},
+            "suggested_action": {"type": "string"},
+            "confidence": {"type": "string"},
         },
         "additionalProperties": True,
     }
@@ -49,10 +75,11 @@ def manifest_schema() -> dict[str, Any]:
             "agent_bootstrap",
             "cache",
             "human_notes",
+            "warning_objects",
             "warnings",
         ],
         "properties": {
-            "preflight_version": {"type": "integer", "const": 3},
+            "preflight_version": {"type": "integer", "const": 4},
             "generated_at": {"type": "string"},
             "root": {"type": "string"},
             "display_name": {"type": ["string", "null"]},
@@ -145,6 +172,7 @@ def manifest_schema() -> dict[str, Any]:
                 "additionalProperties": True,
             },
             "human_notes": {"type": "array", "items": {"type": "string"}},
+            "warning_objects": {"type": "array", "items": warning_schema},
             "warnings": {"type": "array", "items": {"type": "string"}},
         },
         "additionalProperties": True,

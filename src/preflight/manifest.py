@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from preflight.config import PreflightOverrides
-from preflight.scanner import COMPOSE_NAMES, ScanResult, scan
+from preflight.scanner import ScanResult, scan
+from preflight.warnings import build_warning_objects, warning_strings
 
 COMMAND_SCORES = {
     "override": 200,
@@ -17,7 +18,21 @@ COMMAND_SCORES = {
     "go_default": 80,
     "ci_command": 65,
     "tooling_hint": 55,
-    "package_manager": 50,
+    "package_manager": 70,
+}
+COMMAND_CONTEXT_BONUS = {
+    "dev": 20,
+    "ci": 0,
+    "release": -25,
+    "publish": -35,
+    "benchmark": -15,
+}
+COMMAND_CONTEXT_PRIORITY = {
+    "dev": 4,
+    "ci": 3,
+    "benchmark": 2,
+    "release": 1,
+    "publish": 0,
 }
 COMMAND_RISK = {
     "install": "high",
@@ -38,12 +53,17 @@ def build_manifest(
 ) -> dict[str, Any]:
     overrides = overrides or PreflightOverrides.load(root)
     scan_result = scan(root, use_cache=use_cache)
-    commands = _infer_commands(scan_result, overrides)
-    conflicts = _detect_conflicts(scan_result, commands)
+    commands, command_candidates = _infer_commands(scan_result, overrides)
+    warning_objects = build_warning_objects(
+        scan_result,
+        commands,
+        command_candidates,
+        overrides.warnings + scan_result.warnings,
+    )
     display_name = overrides.display_name or _default_display_name(scan_result)
 
     manifest: dict[str, Any] = {
-        "preflight_version": 3,
+        "preflight_version": 4,
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "root": str(scan_result.root),
         "display_name": display_name,
@@ -59,7 +79,8 @@ def build_manifest(
         "evidence": _build_evidence_summary(scan_result, commands),
         "cache": scan_result.cache,
         "human_notes": overrides.notes,
-        "warnings": overrides.warnings + scan_result.warnings + conflicts,
+        "warning_objects": warning_objects,
+        "warnings": warning_strings(warning_objects),
     }
     manifest["agent_bootstrap"] = {
         "markdown": manifest_to_bootstrap(manifest),
@@ -323,7 +344,7 @@ def _bootstrap_analysis_lines(projects: list[dict[str, Any]]) -> list[str]:
 def _infer_commands(
     scan_result: ScanResult,
     overrides: PreflightOverrides,
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     candidates: dict[str, list[dict[str, Any]]] = {}
     pkg = scan_result.files.get("package.json") or {}
     pyproject = scan_result.files.get("pyproject.toml") or {}
@@ -343,6 +364,7 @@ def _infer_commands(
                         "package.json#scripts",
                         "explicit_script",
                         detail=f"package.json script `{key}` exists",
+                        context="dev",
                     )
         if (scan_result.root / "package.json").is_file():
             _add_candidate(
@@ -352,6 +374,7 @@ def _infer_commands(
                 "package.json + lockfile",
                 "package_manager",
                 detail=f"package manager resolved to `{package_manager}`",
+                context="dev",
             )
 
     if isinstance(pyproject, dict):
@@ -374,6 +397,7 @@ def _infer_commands(
                 "pyproject.toml",
                 "package_manager",
                 detail="python project install command inferred from pyproject.toml",
+                context="dev",
             )
         if "pytest" in dependencies or "pytest" in optional_deps or "pytest" in tools:
             _add_candidate(
@@ -383,6 +407,7 @@ def _infer_commands(
                 "pyproject.toml",
                 "tooling_hint",
                 detail="pytest detected in dependencies or tool config",
+                context="dev",
             )
         if "ruff" in dependencies or "ruff" in optional_deps or "ruff" in tools:
             _add_candidate(
@@ -392,6 +417,7 @@ def _infer_commands(
                 "pyproject.toml",
                 "tooling_hint",
                 detail="ruff detected in dependencies or tool config",
+                context="dev",
             )
 
     if (scan_result.root / "Cargo.toml").is_file():
@@ -402,6 +428,7 @@ def _infer_commands(
             "Cargo.toml",
             "cargo_default",
             detail="default Rust test command",
+            context="dev",
         )
         _add_candidate(
             candidates,
@@ -410,6 +437,7 @@ def _infer_commands(
             "Cargo.toml",
             "cargo_default",
             detail="default Rust build command",
+            context="dev",
         )
         _add_candidate(
             candidates,
@@ -418,6 +446,7 @@ def _infer_commands(
             "Cargo.toml",
             "cargo_default",
             detail="default Rust lint command",
+            context="dev",
         )
 
     if (scan_result.root / "go.mod").is_file():
@@ -428,6 +457,7 @@ def _infer_commands(
             "go.mod",
             "go_default",
             detail="default Go test command",
+            context="dev",
         )
         _add_candidate(
             candidates,
@@ -436,6 +466,7 @@ def _infer_commands(
             "go.mod",
             "go_default",
             detail="default Go build command",
+            context="dev",
         )
 
     targets = makefile.get("targets") or []
@@ -449,12 +480,14 @@ def _infer_commands(
                     "Makefile",
                     "make_target",
                     detail=f"Makefile target `{name}` exists",
+                    context="dev",
                 )
 
     if isinstance(github_actions, list):
         for workflow in github_actions:
             if not isinstance(workflow, dict):
                 continue
+            context = _workflow_context(workflow)
             for run_command in workflow.get("run_commands") or []:
                 if not isinstance(run_command, str):
                     continue
@@ -469,41 +502,84 @@ def _infer_commands(
                     workflow.get("file", "github_actions"),
                     "ci_command",
                     detail="command observed in CI workflow",
+                    context=context,
                 )
 
     commands: dict[str, dict[str, Any]] = {}
     for name, items in candidates.items():
-        chosen = max(items, key=lambda item: item["score"])
+        usable = [item for item in items if item.get("usable", True)]
+        chosen_pool = usable or items
+        chosen = max(
+            chosen_pool,
+            key=lambda item: (
+                item["score"],
+                COMMAND_CONTEXT_PRIORITY.get(str(item.get("context")), -1),
+                -len(str(item.get("command", ""))),
+            ),
+        )
         commands[name] = {
             "command": chosen["command"],
             "confidence": _confidence_label(chosen["score"]),
             "source": chosen["source"],
             "risk": _command_risk(name, chosen["command"]),
+            "context": chosen.get("context"),
+            "contexts": sorted(
+                {
+                    str(item.get("context"))
+                    for item in items
+                    if isinstance(item.get("context"), str)
+                }
+            ),
             "evidence": _strip_scores(items),
         }
 
     for name, command in overrides.canonical.items():
-        previous = commands.get(name, {})
-        evidence = previous.get("evidence") if isinstance(previous, dict) else []
-        if not isinstance(evidence, list):
-            evidence = []
+        candidates.setdefault(name, []).append(
+            {
+                "command": command,
+                "source": ".preflight.json#canonical",
+                "detail": "explicit maintainer override",
+                "kind": "override",
+                "context": "dev",
+                "score": COMMAND_SCORES["override"] + COMMAND_CONTEXT_BONUS["dev"],
+                "usable": True,
+            }
+        )
+        evidence = [
+            {
+                "command": command,
+                "source": ".preflight.json#canonical",
+                "detail": "explicit maintainer override",
+                "kind": "override",
+                "context": "dev",
+            },
+            *[
+                item
+                for item in commands.get(name, {}).get("evidence", [])
+                if isinstance(item, dict)
+            ],
+        ]
+        contexts = sorted(
+            {
+                "dev",
+                *[
+                    str(item.get("context"))
+                    for item in evidence
+                    if isinstance(item, dict) and isinstance(item.get("context"), str)
+                ],
+            }
+        )
         commands[name] = {
             "command": command,
             "confidence": "override",
             "source": ".preflight.json#canonical",
             "risk": _command_risk(name, command),
-            "evidence": [
-                {
-                    "command": command,
-                    "source": ".preflight.json#canonical",
-                    "detail": "explicit maintainer override",
-                    "kind": "override",
-                },
-                *[item for item in evidence if isinstance(item, dict)],
-            ],
+            "context": "dev",
+            "contexts": contexts,
+            "evidence": evidence,
         }
 
-    return dict(sorted(commands.items()))
+    return dict(sorted(commands.items())), {key: value for key, value in sorted(candidates.items())}
 
 
 def _default_display_name(scan_result: ScanResult) -> str | None:
@@ -540,64 +616,6 @@ def _build_evidence_summary(
         "cache": scan_result.cache,
         "graph_edge_count": len(scan_result.project_graph.get("edges") or []),
     }
-
-
-def _detect_conflicts(
-    scan_result: ScanResult,
-    commands: dict[str, dict[str, Any]],
-) -> list[str]:
-    messages: list[str] = []
-    locks = scan_result.files.get("lockfiles") or {}
-    pkg = scan_result.files.get("package.json") or {}
-    if isinstance(locks, dict) and isinstance(pkg, dict):
-        package_manager = pkg.get("packageManager")
-        if "yarn.lock" in locks and "package-lock.json" in locks:
-            messages.append(
-                "Both yarn.lock and package-lock.json present; pick one package manager."
-            )
-        if (
-            isinstance(package_manager, str)
-            and "yarn" in package_manager
-            and "package-lock.json" in locks
-        ):
-            messages.append("packageManager suggests Yarn but package-lock.json exists.")
-        if isinstance(package_manager, str) and "pnpm" in package_manager and "yarn.lock" in locks:
-            messages.append("packageManager suggests pnpm but yarn.lock exists.")
-
-    readme = scan_result.files.get("README.md") or {}
-    preview = readme.get("preview_lines") or []
-    if isinstance(preview, list):
-        blob = "\n".join(str(line) for line in preview)
-        if "yarn" in blob.lower() and isinstance(locks, dict) and "package-lock.json" in locks:
-            messages.append("README mentions Yarn but npm lockfile detected.")
-        if "pnpm" in blob.lower() and isinstance(locks, dict) and "yarn.lock" in locks:
-            messages.append("README mentions pnpm but yarn.lock detected.")
-
-    github_actions = scan_result.files.get("github_actions") or []
-    if isinstance(github_actions, list) and github_actions and "test" not in commands:
-        has_testish = False
-        for workflow in github_actions:
-            if not isinstance(workflow, dict):
-                continue
-            for line in workflow.get("run_commands") or []:
-                if not isinstance(line, str):
-                    continue
-                if re.search(
-                    r"\b(pytest|tox|npm test|pnpm test|yarn test|cargo test|go test)\b",
-                    line,
-                ):
-                    has_testish = True
-        if has_testish:
-            messages.append("CI appears to run tests but no local `test` command was inferred.")
-
-    if len(scan_result.projects) > 1:
-        messages.append("Multiple projects detected; check `project_graph` and `projects`.")
-
-    compose_names = [name for name in COMPOSE_NAMES if name in scan_result.files]
-    if compose_names and not scan_result.entrypoints:
-        messages.append("Compose services detected but no entrypoints were extracted.")
-
-    return messages
 
 
 def _pick_package_manager(scan_result: ScanResult) -> str:
@@ -660,14 +678,18 @@ def _add_candidate(
     source: str,
     kind: str,
     detail: str,
+    context: str,
 ) -> None:
+    score = COMMAND_SCORES[kind] + COMMAND_CONTEXT_BONUS.get(context, 0)
     candidates.setdefault(name, []).append(
         {
             "command": command,
             "source": source,
             "kind": kind,
             "detail": detail,
-            "score": COMMAND_SCORES[kind],
+            "context": context,
+            "score": score,
+            "usable": True,
         }
     )
 
@@ -679,6 +701,7 @@ def _strip_scores(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "source": item["source"],
             "kind": item["kind"],
             "detail": item["detail"],
+            "context": item.get("context"),
         }
         for item in items
     ]
@@ -702,21 +725,61 @@ def _dependency_names_from_entries(entries: list[str]) -> list[str]:
 
 
 def _classify_ci_command(command: str) -> str | None:
-    if re.search(r"\b(pytest|tox|npm test|pnpm test|yarn test|cargo test|go test)\b", command):
-        return "test"
-    if re.search(
-        r"\b(ruff check|eslint|cargo clippy|npm run lint|pnpm lint|yarn lint)\b",
-        command,
+    stripped = command.strip()
+    lowered = stripped.lower()
+    if lowered.startswith(
+        ("if ", "then", "fi", "else", "elif ", "for ", "while ", "case ", "do", "done")
     ):
-        return "lint"
-    if re.search(r"\b(npm run build|pnpm build|yarn build|cargo build|go build)\b", command):
-        return "build"
+        return None
     if re.search(
         r"\b(npm install|pnpm install|yarn install|bun install|uv sync|pip install)\b",
-        command,
+        stripped,
     ):
         return "install"
+    if re.search(
+        (
+            r"\b(pytest|tox|vitest|npm test|pnpm test|yarn test|cargo test|go test|"
+            r"make test|python -m pytest|uv run pytest)\b"
+        ),
+        stripped,
+    ):
+        return "test"
+    if re.search(
+        (
+            r"\b(ruff check|eslint|cargo clippy|npm run lint|pnpm lint|yarn lint|"
+            r"make lint|python -m ruff)\b"
+        ),
+        stripped,
+    ):
+        return "lint"
+    if re.search(
+        (
+            r"\b(npm run build|pnpm build|yarn build|cargo build|go build|"
+            r"make build|python -m build)\b"
+        ),
+        stripped,
+    ):
+        return "build"
     return None
+
+
+def _workflow_context(workflow: dict[str, Any]) -> str:
+    blob = " ".join(
+        str(part)
+        for part in (
+            workflow.get("file"),
+            workflow.get("name"),
+            " ".join(workflow.get("job_hints") or []),
+        )
+        if isinstance(part, str)
+    ).lower()
+    if re.search(r"\b(publish|pypi|deploy|release-please|npm-publish|twine)\b", blob):
+        return "publish"
+    if re.search(r"\b(release|backport|tag|version|ship)\b", blob):
+        return "release"
+    if re.search(r"\b(bench|benchmark|perf|performance|codspeed|latency|eval)\b", blob):
+        return "benchmark"
+    return "ci"
 
 
 def _command_risk(name: str, command: str) -> str:

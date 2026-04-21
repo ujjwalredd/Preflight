@@ -10,9 +10,10 @@ def test_build_manifest_minimal(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
     manifest = build_manifest(tmp_path, use_cache=False)
     assert manifest["root"] == str(tmp_path.resolve())
-    assert manifest["preflight_version"] == 3
+    assert manifest["preflight_version"] == 4
     assert manifest["schema_ref"] == "manifest.schema.json"
     assert manifest["cache"]["status"] == "disabled"
+    assert manifest["warning_objects"] == []
     raw = json.loads(manifest_to_json(manifest))
     assert raw["root"] == manifest["root"]
 
@@ -24,6 +25,9 @@ def test_lockfile_conflict_warning(tmp_path: Path) -> None:
     assert any(
         "yarn.lock" in warning and "package-lock.json" in warning
         for warning in manifest["warnings"]
+    )
+    assert any(
+        warning["id"] == "mixed_lockfiles" for warning in manifest["warning_objects"]
     )
 
 
