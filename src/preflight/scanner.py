@@ -90,7 +90,7 @@ MAKEFILE_NAMES = {"Makefile", "makefile"}
 COMPOSE_NAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 ENV_EXAMPLE_NAMES = (".env.example", ".env.sample", "env.example")
 COMMON_PYTHON_ENTRYPOINTS = {"main.py", "app.py", "manage.py", "server.py"}
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 class _PreflightYamlLoader(yaml.SafeLoader):
@@ -238,8 +238,6 @@ def _build_scan_signature(root: Path) -> str:
     watched: list[list[Any]] = []
     for path in _walk_files(root):
         rel = path.relative_to(root)
-        if not _should_watch_path(rel):
-            continue
         try:
             stat = path.stat()
         except OSError:
@@ -247,30 +245,6 @@ def _build_scan_signature(root: Path) -> str:
         watched.append([rel.as_posix(), stat.st_mtime_ns, stat.st_size])
     raw = json.dumps({"version": CACHE_VERSION, "files": watched}, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _should_watch_path(rel: Path) -> bool:
-    name = rel.name
-    if (
-        name in PROJECT_MARKERS
-        or name in LOCKFILES
-        or name in README_NAMES
-        or name in MAKEFILE_NAMES
-    ):
-        return True
-    if name == ".preflight.json" or name == "Dockerfile" or name in COMPOSE_NAMES:
-        return True
-    if name in ENV_EXAMPLE_NAMES:
-        return True
-    if rel.suffix == ".tf":
-        return True
-    if _instruction_kind(rel) is not None:
-        return True
-    if _is_workflow_path(rel):
-        return True
-    if _is_common_entrypoint_path(rel):
-        return True
-    return False
 
 
 def _is_workflow_path(rel: Path) -> bool:

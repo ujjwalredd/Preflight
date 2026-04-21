@@ -124,7 +124,8 @@ Preflight currently does all of the following:
 
 ## Schema contract
 
-The shipped schema file lives at `manifest.schema.json` and is also available via:
+The repository schema file lives at `manifest.schema.json`. Installed packages also bundle
+`preflight/manifest.schema.json`, and the schema is available via:
 
 - `preflight schema`
 - `GET /schema.json`

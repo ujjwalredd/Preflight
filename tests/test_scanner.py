@@ -162,3 +162,65 @@ def test_scan_cache_hits_on_second_run(tmp_path: Path) -> None:
     assert first.cache["status"] == "miss"
     assert second.cache["status"] == "hit"
     assert Path(second.cache["path"]).is_file()
+
+
+def test_scan_cache_invalidates_when_fastapi_source_changes(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo'\ndependencies = ['fastapi>=0.1']\n",
+        encoding="utf-8",
+    )
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    route_file = app_dir / "routes.py"
+    route_file.write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/a")',
+                "def a():",
+                "    return 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    first = scan(tmp_path)
+    route_file.write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "router = APIRouter()",
+                '@router.get("/b")',
+                "def b():",
+                "    return 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    second = scan(tmp_path)
+    assert first.projects[0]["analysis"]["fastapi_routes"][0]["path"] == "/a"
+    assert second.projects[0]["analysis"]["fastapi_routes"][0]["path"] == "/b"
+    assert second.cache["status"] == "miss"
+
+
+def test_scan_cache_invalidates_when_next_source_changes(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "demo", "dependencies": {"next": "14.0.0"}}),
+        encoding="utf-8",
+    )
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    page = app_dir / "page.tsx"
+    page.write_text("export default function Page() { return null }\n", encoding="utf-8")
+    first = scan(tmp_path)
+    page.unlink()
+    about_dir = app_dir / "about"
+    about_dir.mkdir()
+    (about_dir / "page.tsx").write_text(
+        "export default function About() { return null }\n",
+        encoding="utf-8",
+    )
+    second = scan(tmp_path)
+    assert first.projects[0]["analysis"]["next_routes"][0]["route"] == "/"
+    assert second.projects[0]["analysis"]["next_routes"][0]["route"] == "/about"
+    assert second.cache["status"] == "miss"

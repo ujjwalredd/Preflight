@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from preflight.cli import main
-from preflight.verify import verify_manifest
+from preflight.verify import _build_execution_env, verify_manifest
 
 
 def test_verify_returns_dry_run_plan(tmp_path: Path, capsys) -> None:
@@ -95,3 +96,50 @@ def test_verify_runs_pytest_with_current_interpreter(tmp_path: Path) -> None:
 
     assert result["success"] is True
     assert result["steps"][0]["status"] == "passed"
+
+
+def test_verify_rewrites_python_module_commands_to_current_interpreter(tmp_path: Path) -> None:
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_yaml_import.py").write_text(
+        "\n".join(
+            [
+                "import yaml",
+                "",
+                "def test_yaml_import() -> None:",
+                "    assert yaml is not None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "root": str(tmp_path),
+        "projects": [{"types": ["python"]}],
+        "commands": {
+            "test": {
+                "command": "python -m pytest -q",
+                "confidence": "high",
+                "source": "manual",
+                "risk": "low",
+                "evidence": [],
+            }
+        },
+    }
+
+    result = verify_manifest(manifest, selected_commands=["test"], run=True)
+
+    assert result["success"] is True
+    assert result["steps"][0]["status"] == "passed"
+
+
+def test_verify_adds_windows_scripts_directory_to_path(tmp_path: Path) -> None:
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    manifest = {
+        "root": str(tmp_path),
+        "projects": [{"types": ["python"]}],
+    }
+
+    env = _build_execution_env(tmp_path, manifest, {})
+
+    assert env["PATH"].split(os.pathsep)[0] == str(scripts_dir)

@@ -170,7 +170,12 @@ def _build_execution_env(
     env.update(overrides)
 
     path_parts: list[str] = []
-    for bin_dir in (root / ".venv" / "bin", root / "venv" / "bin"):
+    for bin_dir in (
+        root / ".venv" / "bin",
+        root / "venv" / "bin",
+        root / ".venv" / "Scripts",
+        root / "venv" / "Scripts",
+    ):
         if bin_dir.is_dir():
             path_parts.append(str(bin_dir))
     if path_parts:
@@ -194,6 +199,10 @@ def _has_python_project(manifest: dict[str, Any]) -> bool:
 def _normalize_python_tool_args(args: list[str], manifest: dict[str, Any]) -> list[str]:
     if not args or not _has_python_project(manifest):
         return args
+    if _is_python_launcher(args[0]):
+        if len(args) >= 3 and args[1] == "-m" and args[2] in {"pytest", "ruff", "pip"}:
+            return [sys.executable, "-m", args[2], *args[3:]]
+        return [sys.executable, *args[1:]]
     if args[0] == "pytest":
         return [sys.executable, "-m", "pytest", *args[1:]]
     if args[0] == "ruff":
@@ -201,6 +210,11 @@ def _normalize_python_tool_args(args: list[str], manifest: dict[str, Any]) -> li
     if args[:2] == ["pip", "install"]:
         return [sys.executable, "-m", "pip", *args[1:]]
     return args
+
+
+def _is_python_launcher(token: str) -> bool:
+    lowered = token.lower()
+    return lowered == "py" or re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", lowered) is not None
 
 
 def _fallback_risk(name: str, command: str) -> str:

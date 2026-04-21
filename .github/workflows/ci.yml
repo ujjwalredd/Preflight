@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+            verify-tests: false
+          - os: ubuntu-latest
+            python-version: "3.12"
+            verify-tests: true
+          - os: ubuntu-latest
+            python-version: "3.13"
+            verify-tests: false
+          - os: macos-latest
+            python-version: "3.12"
+            verify-tests: false
+          - os: windows-latest
+            python-version: "3.12"
+            verify-tests: false
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Dry-run scan
+        run: python -m preflight scan . --no-cache
+
+      - name: Generate bootstrap
+        run: python -m preflight bootstrap . --text --no-cache
+
+      - name: Verify lint command
+        run: python -m preflight verify . --run --command lint --no-cache
+
+      - name: Verify test command
+        if: matrix.verify-tests
+        run: python -m preflight verify . --run --command test --no-cache
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip && python -m pip install build hatchling
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Install built wheel
+        run: python -m pip install --force-reinstall dist/*.whl
+
+      - name: Check packaged schema
+        run: |
+          python - <<'PY'
+          from importlib.resources import files
+          schema_path = files("preflight").joinpath("manifest.schema.json")
+          assert schema_path.is_file(), schema_path
+          print(schema_path)
+          PY
+
+      - name: Smoke installed CLI
+        run: |
+          preflight schema
+          preflight bootstrap . --text --no-cache
