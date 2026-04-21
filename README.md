@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="image/preflight.png" alt="Preflight logo" width="220">
+  <img src="image/preflight.png" alt="Preflight logo" width="500">
 </p>
 
 # Preflight
