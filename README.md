@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="image/preflight.png" alt="Preflight logo" width="220">
+</p>
+
 # Preflight
 
 Preflight scans a software project and produces a **single canonical manifest** meant for AI coding assistants: inferred commands with confidence, risk, and evidence, extracted AI instruction files, entrypoints, project graphs, framework analysis, CI hints, container metadata, and **consistency warnings** when signals disagree.
@@ -5,6 +9,20 @@ Preflight scans a software project and produces a **single canonical manifest** 
 ## Why this exists
 
 Assistants burn tokens reconciling `README.md`, `package.json`, `Makefile`, `pyproject.toml`, CI YAML, workspace layouts, ad-hoc team docs, and service wiring. Preflight merges those signals into one JSON or Markdown document and can also emit a short **agent bootstrap brief** plus a **JSON schema contract** for downstream tools.
+
+## Latest benchmark
+
+Latest public-repo benchmark run: `2026-04-21T02:14:19Z`
+
+| Repo | Cold scan | Cache hit | Projects | Rules | Warnings | Tokens raw -> bootstrap | Reduction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `langchain-ai/langchain` | `0.650s` | `0.255s` | `21` | `2` | `1` | `8924 -> 274` | `96.9%` |
+| `vercel/ai` | `0.988s` | `0.398s` | `86` | `4` | `1` | `11117 -> 686` | `93.8%` |
+| `microsoft/autogen` | `0.458s` | `0.195s` | `12` | `3` | `1` | `14803 -> 383` | `97.4%` |
+| `huggingface/transformers` | `0.951s` | `0.371s` | `1` | `5` | `0` | `28622 -> 116` | `99.6%` |
+| `modelcontextprotocol/servers` | `0.137s` | `0.109s` | `8` | `3` | `1` | `15972 -> 379` | `97.6%` |
+
+This table reflects only the most recent 5-repo benchmark run, not the earlier exploratory scans.
 
 ## Install
 
